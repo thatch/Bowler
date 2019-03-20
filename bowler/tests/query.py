@@ -69,15 +69,44 @@ class QueryTest(BowlerTestCase):
             query_func=query_func,
         )
 
-    def test_add_argument(self):
+    def test_add_argument_positional(self):
         def query_func(x):
-            return Query(x).select_function("f").add_argument("y", "5")
+            return Query(x).select_function("f").add_argument("y", "5", positional=True)
+
+        self.run_bowler_modifiers(
+            [
+                ("def f(x): pass", "def f(x, y): pass"),
+                ("def g(x): pass", "def g(x): pass"),
+                ("f()", "f(5)"),  # Wrong (type, and position)
+                ("g()", "g()"),
+            ],
+            query_func=query_func,
+        )
+
+    def test_add_argument_positional_after(self):
+        def f(x): pass
+
+        def query_func(x):
+            return Query(x).select_function(f).add_argument("z", "5", after="x", positional=True)
+
+        self.run_bowler_modifiers(
+            [
+                ("def g(x): pass", "def g(x): pass"),
+                ("f()", "f(5)"),  # Wrong (type, and position)
+                ("g()", "g()"),
+            ],
+            query_func=query_func,
+        )
+
+    def test_add_argument_keyword(self):
+        def query_func(x):
+            return Query(x).select_function("f").add_argument("y", "5", positional=False)
 
         self.run_bowler_modifiers(
             [
                 ("def f(x): pass", "def f(x, y=5): pass"),
                 ("def g(x): pass", "def g(x): pass"),
-                # ("f()", "???"),
+                ("f()", "f()"),
                 ("g()", "g()"),
             ],
             query_func=query_func,
