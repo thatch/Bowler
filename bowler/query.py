@@ -716,61 +716,88 @@ class Query:
                 raise ValueError(f"{after} does not exist in original function")
 
             names = list(signature.parameters)
-            stop_at = names.index(cast(str, after))
-            if names[0] in ("self", "cls", "meta"):
-                stop_at -= 1
+            insert_at = names.index(cast(str, after)) + 1
+        else:
+            insert_at = -1
+            names = None
 
         def add_argument_transform(
             node: Node, capture: Capture, filename: Filename
         ) -> None:
+            if "function_arguments" not in capture:
+                return  # imports
+
             spec = FunctionSpec.build(node, capture)
             done = False
             value_leaf = Name(value)
+            local_insert_at = insert_at
 
             if spec.is_def:
                 new_arg = FunctionArgument(
                     name,
                     value_leaf if keyword else None,
-                    cast(str, type_annotation) if type_annotation != SENTINEL else "",
+                    cast(str, type_annotation)
+                    if type_annotation is not SENTINEL
+                    else "",
                 )
                 for index, argument in enumerate(spec.arguments):
-                    if (
+                    if argument.name in ("self", "cls", "meta") and after == START:
+                        print("FIRST CASE")
+                        spec.arguments.insert(index + 1, new_arg)
+                        done = True
+                        break
+                    elif (
                         after == START
-                        or after == argument.name
-                        or (positional and (argument.value or argument.star))
-                        or (
-                            keyword
-                            and argument.star
-                            and argument.star.type == TOKEN.DOUBLESTAR
-                        )
+                        or argument.star
+                        or (positional and argument.value)
                     ):
                         spec.arguments.insert(index, new_arg)
                         done = True
                         break
+                    elif after == START or after == argument.name:
+                        spec.arguments.insert(index + 1, new_arg)
+                        done = True
+                        break
 
                 if not done:
+                    # This can really only happen if passed a different function
+                    # as `source` vs this def.
+                    if positional and after not in (SENTINEL, START):
+                        log.debug(
+                            f"Missing {len(spec.arguments)-insert_at+1} arguments"
+                        )
+                        return
                     spec.arguments.append(new_arg)
 
             elif positional:
+                if names and names[0] in ("self", "cls", "meta"):
+                    local_insert_at -= 1
                 new_arg = FunctionArgument(value=value_leaf)
                 for index, argument in enumerate(spec.arguments):
                     if argument.star and argument.star.type == TOKEN.STAR:
                         log.debug(f"noping out due to *{argument.name}")
-                        done = True
-                        break
+                        return
 
                     if (
                         after == START
-                        or index == stop_at
                         or argument.name
                         or argument.star
+                        or index == local_insert_at
                     ):
                         spec.arguments.insert(index, new_arg)
                         done = True
                         break
 
                 if not done:
+                    if local_insert_at > len(spec.arguments):
+                        log.debug(
+                            f"Missing {len(spec.arguments)-local_insert_at+1} arguments"
+                        )
+                        return
                     spec.arguments.append(new_arg)
+            else:
+                new_arg = FunctionArgument(name, value=value_leaf)
+                spec.arguments.append(new_arg)
 
             spec.explode()
 
