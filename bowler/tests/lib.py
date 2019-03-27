@@ -5,6 +5,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import functools
 import multiprocessing
 import sys
 import tempfile
@@ -50,6 +51,71 @@ class BowlerTestCase(unittest.TestCase):
             msg += "-" * 20 + "<    end stdout   >" + "-" * 20 + "\n"
         return msg
 
+    def do(self, combined_text: str, in_process: bool=True) -> None:
+        exception_queue = multiprocessing.Queue()
+        lines = combined_text.splitlines()
+        left, right = [], []
+        if lines[0] == '':
+            del lines[0]
+        indent = len(lines[0]) - len(lines[0].lstrip())
+        for line in lines:
+            line = line[indent:]
+            if '#+' in line:
+                parts = line.split('#+', 1)
+                left.append(parts[0].rstrip())
+                right.append(parts[1].lstrip())
+            else:
+                left.append(line)
+                right.append(line)
+
+        def store_exceptions_on(func):
+            @functools.wraps(func)
+            def inner(node, capture, filename=None):
+                # When in_process=False, this runs in another process.  See
+                # notes below.
+                try:
+                    return func(node, capture, filename)
+                except Exception as e:
+                    exception_queue.put(e)
+
+            return inner
+
+        with tempfile.NamedTemporaryFile(suffix=".py") as f:
+            # TODO: I'm almost certain this will not work on Windows, since
+            # NamedTemporaryFile has it already open for writing.  Consider
+            # using mktemp directly?
+            with open(f.name, "w") as fw:
+                fw.write('\n'.join(left) + '\n')
+
+            query = self.build_query([f.name])
+
+            assert query is not None, "Remember to return the Query"
+            assert query.retcode is None, "Return before calling .execute"
+            assert len(query.transforms) == 1, "TODO: Support multiple"
+
+            for i in range(len(query.current.callbacks)):
+                query.current.callbacks[i] = store_exceptions_on(
+                    query.current.callbacks[i]
+                )
+
+            # We require the in_process parameter in order to record coverage properly,
+            # but it also helps in bubbling exceptions and letting tests read state set
+            # by modifiers.
+            query.execute(
+                interactive=False, write=True, silent=False, in_process=in_process
+            )
+
+            # In the case of in_process=False (mirroring normal use of the tool) we use
+            # the queue to ship back exceptions from local_process, which can actually
+            # fail the test.  Normally exceptions in modifiers are not printed
+            # at all unless you pass --debug, and even then you don't get the
+            # traceback.
+            if not exception_queue.empty():
+                raise AssertionError from exception_queue.get()
+
+            with open(f.name, "r") as fr:
+                self.assertEqual("\n".join(right) + "\n", fr.read())
+
     def run_bowler_modifier(
         self,
         input_text,
@@ -68,12 +134,17 @@ class BowlerTestCase(unittest.TestCase):
 
         exception_queue = multiprocessing.Queue()
 
-        def local_modifier(node, capture, filename):
-            # When in_process=False, this runs in another process.  See notes below.
-            try:
-                return modifier(node, capture, filename)
-            except Exception as e:
-                exception_queue.put(e)
+        def store_exceptions_on(func):
+            @functools.wraps(func)
+            def inner(node, capture, filename=None):
+                # When in_process=False, this runs in another process.  See
+                # notes below.
+                try:
+                    return func(node, capture, filename)
+                except Exception as e:
+                    exception_queue.put(e)
+
+            return inner
 
         with tempfile.NamedTemporaryFile(suffix=".py") as f:
             # TODO: I'm almost certain this will not work on Windows, since
@@ -91,7 +162,16 @@ class BowlerTestCase(unittest.TestCase):
                 # N.b. exceptions may not work
                 query = modifier_func(query)
             else:
-                query = query.modify(local_modifier)
+                query = query.modify(modifier)
+
+            assert query is not None, "Remember to return the Query"
+            assert query.retcode is None, "Return before calling .execute"
+            assert len(query.transforms) == 1, "TODO: Support multiple"
+
+            for i in range(len(query.current.callbacks)):
+                query.current.callbacks[i] = store_exceptions_on(
+                    query.current.callbacks[i]
+                )
 
             # We require the in_process parameter in order to record coverage properly,
             # but it also helps in bubbling exceptions and letting tests read state set
@@ -102,8 +182,9 @@ class BowlerTestCase(unittest.TestCase):
 
             # In the case of in_process=False (mirroring normal use of the tool) we use
             # the queue to ship back exceptions from local_process, which can actually
-            # fail the test.  Normally exceptions in modifiers are not printed unless
-            # you pass --debug.
+            # fail the test.  Normally exceptions in modifiers are not printed
+            # at all unless you pass --debug, and even then you don't get the
+            # traceback.
             if not exception_queue.empty():
                 raise AssertionError from exception_queue.get()
 
@@ -145,6 +226,20 @@ class BowlerTestCaseTest(BowlerTestCase):
 
         output = self.run_bowler_modifier(input, selector, modifier)
         self.assertEqual("x=a/b", output)
+
+    def build_query(self, filenames):
+
+        def modifier(node, capture, filename=None):
+            capture["op"].value = "/"
+            capture["op"].changed()
+
+        return Query(filenames).select("term< any op='*' any >").modify(modifier)
+
+    def test_do(self):
+        self.do("x=a*b     #+ x=a/b")
+        self.do('''
+            x=a*b     #+ x=a/b
+            ''')
 
     def test_run_bowler_modifier_ferries_exception(self):
         input = "x=a*b"
