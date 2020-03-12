@@ -287,7 +287,11 @@ class Query:
                 function_def=funcdef<
                     'def' function_name='{name}'
                     function_parameters=parameters< '('
-                        function_arguments=typedargslist< ( 'self' | 'cls' ) any* >*
+                        (
+                            function_arguments=typedargslist< ( 'self' | 'cls' ) any* >*
+                        |
+                            ( 'self' | 'cls' ) any*
+                        )
                     ')' >
                     any*
                 >
@@ -296,7 +300,11 @@ class Query:
             function_def=funcdef<
                 'def' function_name='{name}'
                 function_parameters=parameters< '('
-                    function_arguments=typedargslist< ( 'self' | 'cls' ) any* >*
+                    (
+                        function_arguments=typedargslist< ( 'self' | 'cls' ) any* >*
+                    |
+                        ( 'self' | 'cls' ) any*
+                    )
                 ')' >
                 any*
             >
